@@ -1,29 +1,78 @@
 package main
 
 import (
-	"fmt"
+	"encoding/json"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
 
 	"gokvs/kvs"
 )
 
+var wg sync.WaitGroup
+var server kvs.Server
+
+type ParsedBody struct {
+	Value interface{} `json:"value"`
+}
+
+func responseHandler(w http.ResponseWriter, req *http.Request) {
+	var v ParsedBody
+	rMap := make(map[string]interface{})
+	switch req.Method {
+	case "GET":
+		id := strings.TrimPrefix(req.URL.Path, "/")
+		val := server.Get(id)
+		rMap["value"] = val
+		jsonResult, err := json.Marshal(rMap)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Write(jsonResult)
+	case "POST":
+		err := json.NewDecoder(req.Body).Decode(&v)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		id := server.Set(v)
+		rMap["id"] = id
+		jsonResult, err := json.Marshal(rMap)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Write(jsonResult)
+	case "PUT":
+		id := strings.TrimPrefix(req.URL.Path, "/")
+		err := json.NewDecoder(req.Body).Decode(&v)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		err = server.Update(id, v)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+	case "DELETE":
+		id := strings.TrimPrefix(req.URL.Path, "/")
+		err := server.Update(id, v)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+}
 func main() {
-	fmt.Println("Storing values in KVS")
-	key1 := kvs.Add("Value 1")
-	key2 := kvs.Add(2)
-	key3 := kvs.Add(0xAB)
+	server = kvs.Start()
+	wg.Add(3)
 
-	fmt.Println(key1, key2, key3)
+	http.HandleFunc("/", responseHandler)
 
-	fmt.Printf("Deleting %s\n", key1)
-
-	deleteError := kvs.Delete(key1)
-	if deleteError != nil {
-		fmt.Printf("Error while deleting: %s\n", deleteError)
-	}
-
-	val, err := kvs.Fetch(key2)
-	if err != nil {
-		fmt.Println("Fetch Error", err)
-	}
-	fmt.Println(val)
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
