@@ -29,40 +29,6 @@ type Server struct {
 var actionChannel chan Action
 var kvs map[uuid.UUID]interface{}
 
-func Start() Server {
-	kvs = make(map[uuid.UUID]interface{})
-	actionChannel = make(chan Action)
-
-	go func() {
-		for action := range actionChannel {
-			switch action.actionType {
-			case getActionType:
-				if val, err := getFromKvs(action.id); err == nil {
-					action.replyChannel <- val
-				} else {
-					action.replyChannel <- err
-				}
-			case setActionType:
-				idToReturn := setToKvs(action.val)
-				action.replyChannel <- idToReturn
-			case updateActionType:
-				updateResult := updateKvs(action.id, action.val)
-				action.replyChannel <- updateResult
-			case deleteActionType:
-				deleteResult := deleteFromKvs(action.id)
-				action.replyChannel <- deleteResult
-			default:
-				log.Fatal("Unknown action type", action.actionType)
-			}
-		}
-	}()
-
-	server := Server{
-		actionChannel: actionChannel,
-	}
-	return server
-}
-
 func getFromKvs(ketToFetch string) (interface{}, error) {
 	uuidToFetch, parseError := uuid.Parse(ketToFetch)
 	if parseError != nil {
@@ -99,6 +65,40 @@ func deleteFromKvs(keyToDelete string) error {
 		delete(kvs, uuidToDelete)
 	}
 	return nil
+}
+
+func Start() Server {
+	kvs = make(map[uuid.UUID]interface{})
+	actionChannel = make(chan Action)
+
+	go func() {
+		for action := range actionChannel {
+			switch action.actionType {
+			case getActionType:
+				if val, err := getFromKvs(action.id); err == nil {
+					action.replyChannel <- val
+				} else {
+					action.replyChannel <- err
+				}
+			case setActionType:
+				idToReturn := setToKvs(action.val)
+				action.replyChannel <- idToReturn
+			case updateActionType:
+				updateResult := updateKvs(action.id, action.val)
+				action.replyChannel <- updateResult
+			case deleteActionType:
+				deleteResult := deleteFromKvs(action.id)
+				action.replyChannel <- deleteResult
+			default:
+				log.Fatal("Unknown action type", action.actionType)
+			}
+		}
+	}()
+
+	server := Server{
+		actionChannel: actionChannel,
+	}
+	return server
 }
 
 func (s *Server) Get(id string) interface{} {

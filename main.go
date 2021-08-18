@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -17,20 +18,50 @@ type ParsedBody struct {
 	Value interface{} `json:"value"`
 }
 
-func responseHandler(w http.ResponseWriter, req *http.Request) {
+func idResponseHandler(w http.ResponseWriter, req *http.Request) {
+	fmt.Println("ID Request received!")
 	var v ParsedBody
-	rMap := make(map[string]interface{})
 	switch req.Method {
 	case "GET":
-		id := strings.TrimPrefix(req.URL.Path, "/")
+		id := strings.TrimPrefix(req.URL.Path, "/kvs/")
 		val := server.Get(id)
-		rMap["value"] = val
-		jsonResult, err := json.Marshal(rMap)
+		jsonResult, err := json.Marshal(val)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		w.Write(jsonResult)
+	case "PUT":
+		id := strings.TrimPrefix(req.URL.Path, "/kvs/")
+		err := json.NewDecoder(req.Body).Decode(&v)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		err = server.Update(id, v)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+	case "DELETE":
+		id := strings.TrimPrefix(req.URL.Path, "/kvs/")
+		err := server.Update(id, v)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	default:
+		http.Error(w, "Method not supported with /:id", http.StatusBadRequest)
+		return
+	}
+}
+
+func responseHandler(w http.ResponseWriter, req *http.Request) {
+	fmt.Println("Request received!")
+	var v ParsedBody
+	rMap := make(map[string]interface{})
+	switch req.Method {
 	case "POST":
 		err := json.NewDecoder(req.Body).Decode(&v)
 		if err != nil {
@@ -45,34 +76,17 @@ func responseHandler(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		w.Write(jsonResult)
-	case "PUT":
-		id := strings.TrimPrefix(req.URL.Path, "/")
-		err := json.NewDecoder(req.Body).Decode(&v)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		err = server.Update(id, v)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-	case "DELETE":
-		id := strings.TrimPrefix(req.URL.Path, "/")
-		err := server.Update(id, v)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+	default:
+		http.Error(w, "Method not supported without /:id", http.StatusBadRequest)
+		return
 	}
-
 }
 func main() {
 	server = kvs.Start()
 	wg.Add(3)
 
-	http.HandleFunc("/", responseHandler)
+	http.HandleFunc("/kvs", responseHandler)
+	http.HandleFunc("/kvs/", idResponseHandler)
 
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
