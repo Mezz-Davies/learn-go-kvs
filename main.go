@@ -19,38 +19,53 @@ type ParsedBody struct {
 }
 
 func idResponseHandler(w http.ResponseWriter, req *http.Request) {
-	fmt.Println("ID Request received!")
+	id := strings.TrimPrefix(req.URL.Path, "/kvs/")
+	if len(id) == 0 {
+		http.Error(w, fmt.Sprintf("Please provide an ID"), http.StatusBadRequest)
+		return
+	}
+	if isValid, validationError := kvs.IdIsValid(id); !isValid {
+		http.Error(w, fmt.Sprintf("ID format error: %s", validationError.Error()), http.StatusBadRequest)
+		return
+	}
 	var v ParsedBody
 	switch req.Method {
 	case "GET":
-		id := strings.TrimPrefix(req.URL.Path, "/kvs/")
-		val := server.Get(id)
+		val, err := kvs.Get(id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
+		fmt.Println(val, "returned from kvs")
+		if val == nil {
+			http.Error(w, "Requested resource does not exist.", http.StatusBadRequest)
+			return
+		}
 		jsonResult, err := json.Marshal(val)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		w.WriteHeader(http.StatusOK)
 		w.Write(jsonResult)
 	case "PUT":
-		id := strings.TrimPrefix(req.URL.Path, "/kvs/")
 		err := json.NewDecoder(req.Body).Decode(&v)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		err = server.Update(id, v)
+		err = kvs.Update(id, v)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-
+		w.WriteHeader(http.StatusAccepted)
 	case "DELETE":
-		id := strings.TrimPrefix(req.URL.Path, "/kvs/")
-		err := server.Update(id, v)
+		err := kvs.Delete(id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		w.WriteHeader(http.StatusAccepted)
 	default:
 		http.Error(w, "Method not supported with /:id", http.StatusBadRequest)
 		return
@@ -58,7 +73,6 @@ func idResponseHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 func responseHandler(w http.ResponseWriter, req *http.Request) {
-	fmt.Println("Request received!")
 	var v ParsedBody
 	rMap := make(map[string]interface{})
 	switch req.Method {
@@ -68,13 +82,18 @@ func responseHandler(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		id := server.Set(v)
+		id, err := kvs.Set(v)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		rMap["id"] = id
 		jsonResult, err := json.Marshal(rMap)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		w.WriteHeader(http.StatusOK)
 		w.Write(jsonResult)
 	default:
 		http.Error(w, "Method not supported without /:id", http.StatusBadRequest)
@@ -82,10 +101,13 @@ func responseHandler(w http.ResponseWriter, req *http.Request) {
 	}
 }
 func main() {
-	server = kvs.Start()
-	wg.Add(3)
+	kvs.Start()
+	defer kvs.Stop()
 
+	// Manage calls to /kvs
 	http.HandleFunc("/kvs", responseHandler)
+
+	// Manage calls to /kvs/:id
 	http.HandleFunc("/kvs/", idResponseHandler)
 
 	log.Fatal(http.ListenAndServe(":8080", nil))

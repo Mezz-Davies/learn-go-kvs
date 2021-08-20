@@ -1,6 +1,8 @@
 package kvs
 
 import (
+	"errors"
+	"expvar"
 	"log"
 
 	uuid "github.com/google/uuid"
@@ -16,10 +18,9 @@ const (
 )
 
 type Action struct {
-	actionType   actionType
-	id           string
-	val          interface{}
-	replyChannel chan interface{}
+	actionType actionType
+	id         string
+	val        interface{}
 }
 
 type Server struct {
@@ -27,6 +28,25 @@ type Server struct {
 }
 
 var actionChannel chan Action
+var replyChannel chan interface{}
+
+type KvsMetricsStruct struct {
+	Size                 int
+	Operations           int
+	SuccessfulOperations int
+}
+
+var kvsSize int
+var kvsOps int
+var kvsSuccessfulOps int
+
+type kvsResult struct {
+	actionType actionType
+	success    bool
+}
+
+var resultsChannel chan kvsResult
+
 var kvs map[uuid.UUID]interface{}
 
 func getFromKvs(ketToFetch string) (interface{}, error) {
@@ -67,100 +87,162 @@ func deleteFromKvs(keyToDelete string) error {
 	return nil
 }
 
-func Start() Server {
-	kvs = make(map[uuid.UUID]interface{})
-	actionChannel = make(chan Action)
+func KvsMetrics() interface{} {
+	return KvsMetricsStruct{
+		Size:                 kvsSize,
+		Operations:           kvsOps,
+		SuccessfulOperations: kvsSuccessfulOps,
+	}
+}
 
-	go func() {
-		for action := range actionChannel {
-			switch action.actionType {
-			case getActionType:
-				if val, err := getFromKvs(action.id); err == nil {
-					action.replyChannel <- val
-				} else {
-					action.replyChannel <- err
-				}
-			case setActionType:
-				idToReturn := setToKvs(action.val)
-				action.replyChannel <- idToReturn
-			case updateActionType:
-				updateResult := updateKvs(action.id, action.val)
-				action.replyChannel <- updateResult
-			case deleteActionType:
-				deleteResult := deleteFromKvs(action.id)
-				action.replyChannel <- deleteResult
-			default:
-				log.Fatal("Unknown action type", action.actionType)
+func Start(initState ...map[uuid.UUID]interface{}) {
+	kvs = make(map[uuid.UUID]interface{})
+	for _, state := range initState {
+		for k, v := range state {
+			kvs[k] = v
+		}
+	}
+	actionChannel = make(chan Action)
+	replyChannel = make(chan interface{})
+	resultsChannel = make(chan kvsResult)
+
+	// ExpVars
+	expvar.Publish("Kvs Metrics", expvar.Func(KvsMetrics))
+
+	// init channel monitoring
+	go monitorStoreOperations(actionChannel)
+	go monitorResultsChannel(resultsChannel)
+}
+
+func Stop() {
+	close(actionChannel)
+	close(replyChannel)
+}
+
+func monitorStoreOperations(storeActionChannel <-chan Action) {
+	for action := range storeActionChannel {
+		switch action.actionType {
+		case getActionType:
+			if val, err := getFromKvs(action.id); err == nil {
+				replyChannel <- val
+			} else {
+				replyChannel <- err
+			}
+		case setActionType:
+			idToReturn := setToKvs(action.val)
+			replyChannel <- idToReturn
+		case updateActionType:
+			updateResult := updateKvs(action.id, action.val)
+			replyChannel <- updateResult
+		case deleteActionType:
+			deleteResult := deleteFromKvs(action.id)
+			replyChannel <- deleteResult
+		default:
+			log.Fatal("Unknown action type", action.actionType)
+		}
+	}
+}
+
+func monitorResultsChannel(resultsChannel <-chan kvsResult) {
+	for result := range resultsChannel {
+		kvsOps += 1
+		if result.success == true {
+			kvsSuccessfulOps += 1
+
+			switch {
+			case result.actionType == setActionType:
+				kvsSize += 1
+			case result.actionType == deleteActionType:
+				kvsSize -= 1
 			}
 		}
-	}()
-
-	server := Server{
-		actionChannel: actionChannel,
 	}
-	return server
 }
 
-func (s *Server) Get(id string) interface{} {
-	reply := make(chan interface{})
-
-	action := Action{
-		actionType:   getActionType,
-		id:           id,
-		val:          nil,
-		replyChannel: reply,
+func registerResult(actionType actionType, success bool) {
+	resultToRegister := kvsResult{
+		actionType: actionType,
+		success:    success,
 	}
-
-	s.actionChannel <- action
-	val := <-reply
-	return val
+	resultsChannel <- resultToRegister
 }
 
-func (s *Server) Set(value interface{}) string {
-	reply := make(chan interface{})
-
-	action := Action{
-		actionType:   setActionType,
-		id:           "",
-		val:          value,
-		replyChannel: reply,
+func IdIsValid(id string) (bool, error) {
+	_, parseError := uuid.Parse(id)
+	if parseError != nil {
+		return false, parseError
 	}
-
-	s.actionChannel <- action
-	id := <-reply
-	return id.(string)
+	return true, nil
 }
 
-func (s *Server) Update(id string, value interface{}) error {
-	reply := make(chan interface{})
-
-	action := Action{
-		actionType:   updateActionType,
-		id:           id,
-		val:          value,
-		replyChannel: reply,
+func Get(id string) (interface{}, error) {
+	if id == "" {
+		registerResult(getActionType, false)
+		return "", errors.New("No id provided.")
 	}
+	action := Action{
+		actionType: getActionType,
+		id:         id,
+		val:        nil,
+	}
+	actionChannel <- action
+	val := <-replyChannel
+	registerResult(getActionType, true)
+	return val, nil
+}
 
-	s.actionChannel <- action
-	if err := <-reply; err != nil {
+func Set(value interface{}) (string, error) {
+	if value == nil {
+		registerResult(setActionType, false)
+		return "", errors.New("Nil value given. Value will not be stored.")
+	}
+	action := Action{
+		actionType: setActionType,
+		id:         "",
+		val:        value,
+	}
+	actionChannel <- action
+	id := <-replyChannel
+	registerResult(setActionType, true)
+	return id.(string), nil
+}
+
+func Update(id string, value interface{}) error {
+	if id == "" {
+		registerResult(updateActionType, false)
+		return errors.New("No id provided.")
+	}
+	if value == nil {
+		return errors.New("Nil value given. Value will not be stored.")
+	}
+	action := Action{
+		actionType: updateActionType,
+		id:         id,
+		val:        value,
+	}
+	actionChannel <- action
+	if err := <-replyChannel; err != nil {
 		return err.(error)
 	}
+	registerResult(updateActionType, true)
 	return nil
 }
 
-func (s *Server) Delete(id string) error {
-	reply := make(chan interface{})
-
+func Delete(id string) error {
+	if id == "" {
+		registerResult(deleteActionType, false)
+		return errors.New("No id provided.")
+	}
 	action := Action{
-		actionType:   deleteActionType,
-		id:           id,
-		val:          nil,
-		replyChannel: reply,
+		actionType: deleteActionType,
+		id:         id,
+		val:        nil,
 	}
 
-	s.actionChannel <- action
-	if err := <-reply; err != nil {
+	actionChannel <- action
+	if err := <-replyChannel; err != nil {
 		return err.(error)
 	}
+	registerResult(deleteActionType, true)
 	return nil
 }
