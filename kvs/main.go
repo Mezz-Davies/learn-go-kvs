@@ -3,6 +3,7 @@ package kvs
 import (
 	"errors"
 	"expvar"
+	"fmt"
 	"log"
 
 	uuid "github.com/google/uuid"
@@ -47,7 +48,9 @@ type kvsResult struct {
 
 var resultsChannel chan kvsResult
 
-var kvs map[uuid.UUID]interface{}
+type KvsStoreType map[uuid.UUID]interface{}
+
+var kvs KvsStoreType
 
 func getFromKvs(ketToFetch string) (interface{}, error) {
 	uuidToFetch, parseError := uuid.Parse(ketToFetch)
@@ -95,8 +98,8 @@ func KvsMetrics() interface{} {
 	}
 }
 
-func Start(initState ...map[uuid.UUID]interface{}) {
-	kvs = make(map[uuid.UUID]interface{})
+func Start(initState ...KvsStoreType) {
+	kvs = make(KvsStoreType)
 	for _, state := range initState {
 		for k, v := range state {
 			kvs[k] = v
@@ -208,6 +211,7 @@ func Set(value interface{}) (string, error) {
 }
 
 func Update(id string, value interface{}) error {
+	fmt.Println(value)
 	if id == "" {
 		registerResult(updateActionType, false)
 		return errors.New("No id provided.")
@@ -245,4 +249,8 @@ func Delete(id string) error {
 	}
 	registerResult(deleteActionType, true)
 	return nil
+}
+
+func GetStoreCopy() KvsStoreType {
+	return kvs
 }

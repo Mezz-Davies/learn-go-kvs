@@ -5,10 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"gokvs/kvs"
+	"gokvs/kvsLogger"
 	"log"
 	"net/http"
-	"os"
-	"os/signal"
 	"strings"
 	"time"
 )
@@ -17,93 +16,117 @@ type ParsedBody struct {
 	Value interface{} `json:"value"`
 }
 
-var PortNumber int = 8080
-
-func idResponseHandler(w http.ResponseWriter, req *http.Request) {
+func getAndValidateIdInput(req *http.Request) (string, error) {
 	id := strings.TrimPrefix(req.URL.Path, "/kvs/")
 	if len(id) == 0 {
-		log.Println("No id provided.")
-		http.Error(w, fmt.Sprintf("Please provide an ID"), http.StatusBadRequest)
-		return
+		return "", fmt.Errorf("No id provided")
 	}
 	if isValid, validationError := kvs.IdIsValid(id); !isValid {
-		log.Println("Invalid id provided.")
-		http.Error(w, fmt.Sprintf("ID format error: %s", validationError.Error()), http.StatusBadRequest)
+		return "", fmt.Errorf("ID format error: %s", validationError.Error())
+	}
+	return id, nil
+}
+
+func handleIdGet(w http.ResponseWriter, id string) {
+	val, err := kvs.Get(id)
+	clientErrorMessage := fmt.Sprintf("Could not GET on id %v", id)
+	if err != nil {
+		kvsLogger.Log(fmt.Sprintf("GET Error %v\n", err))
+		http.Error(w, clientErrorMessage, http.StatusBadRequest)
 		return
 	}
-	log.Printf("%v Request for id %v\n", req.Method, id)
+	if val == nil {
+		kvsLogger.Log("GET 404: Resource not found.")
+		http.Error(w, "Requested resource does not exist.", http.StatusNotFound)
+		return
+	}
+	jsonResult, err := json.Marshal(val)
+	if err != nil {
+		kvsLogger.Log(fmt.Sprintf("GET JSON formatting Error %v", err))
+		http.Error(w, clientErrorMessage, http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write(jsonResult)
+}
+
+func handleIdPut(w http.ResponseWriter, req *http.Request, id string) {
+	var v ParsedBody
+	err := json.NewDecoder(req.Body).Decode(&v)
+	clientErrorMessage := fmt.Sprintf("Could not PUT on id %v", id)
+	if err != nil {
+		kvsLogger.Log(fmt.Sprintf("PUT Body JSON decoding Error %v\n", err))
+		http.Error(w, clientErrorMessage, http.StatusBadRequest)
+		return
+	}
+	err = kvs.Update(id, v.Value)
+	if err != nil {
+		kvsLogger.Log(fmt.Sprintf("PUT Error %v\n", err))
+		http.Error(w, clientErrorMessage, http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func handleIdDelete(w http.ResponseWriter, id string) {
+	err := kvs.Delete(id)
+	clientErrorMessage := fmt.Sprintf("Could not DELETE on id %v", id)
+	if err != nil {
+		kvsLogger.Log(fmt.Sprintf("DELETE Error %v\n", err))
+		http.Error(w, clientErrorMessage, http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func idResponseHandler(w http.ResponseWriter, req *http.Request) {
+	id, err := getAndValidateIdInput(req)
+	if err != nil {
+		errMessage := fmt.Sprintf("Id validation error %v", err.Error())
+		kvsLogger.Log(errMessage)
+		http.Error(w, errMessage, http.StatusBadRequest)
+		return
+	}
+	kvsLogger.Log(fmt.Sprintf("%v Request for id %v\n", req.Method, id))
 	switch req.Method {
 	case "GET":
-		val, err := kvs.Get(id)
-		if err != nil {
-			log.Printf("GET Error %v\n", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if val == nil {
-			log.Printf("GET 404: Resource not found.\n")
-			http.Error(w, "Requested resource does not exist.", http.StatusNotFound)
-			return
-		}
-		jsonResult, err := json.Marshal(val)
-		if err != nil {
-			log.Printf("GET JSON formatting Error %v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		w.Write(jsonResult)
+		handleIdGet(w, id)
 	case "PUT":
-		var v ParsedBody
-		err := json.NewDecoder(req.Body).Decode(&v)
-		if err != nil {
-			log.Printf("PUT JSON decoding Error %v\n", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		err = kvs.Update(id, v)
-		if err != nil {
-			log.Printf("PUT Error %v\n", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		w.WriteHeader(http.StatusAccepted)
+		handleIdPut(w, req, id)
 	case "DELETE":
-		err := kvs.Delete(id)
-		if err != nil {
-			log.Printf("DELETE Error %v\n", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		w.WriteHeader(http.StatusAccepted)
+		handleIdDelete(w, id)
 	default:
 		http.Error(w, "Method not supported with /:id", http.StatusBadRequest)
 		return
 	}
 }
 
+func handlePost(w http.ResponseWriter, req *http.Request) {
+
+}
+
 func responseHandler(w http.ResponseWriter, req *http.Request) {
-	var v ParsedBody
-	rMap := make(map[string]interface{})
-	log.Printf("%v Request\n", req.Method)
+	kvsLogger.Log(fmt.Sprintf("%v Request\n", req.Method))
 	switch req.Method {
 	case "POST":
+		var v ParsedBody
 		err := json.NewDecoder(req.Body).Decode(&v)
 		if err != nil {
-			log.Printf("POST JSON decoding error %v", err)
+			kvsLogger.Log(fmt.Sprintf("POST JSON decoding error %v", err))
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		id, err := kvs.Set(v)
+		id, err := kvs.Set(v.Value)
 		if err != nil {
-			log.Printf("POST Error %v", err)
+			kvsLogger.Log(fmt.Sprintf("POST Error %v", err))
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		rMap := make(map[string]interface{})
 		rMap["id"] = id
 		jsonResult, err := json.Marshal(rMap)
 		if err != nil {
-			log.Printf("POST JSON encoding error %v", err)
+			kvsLogger.Log(fmt.Sprintf("POST JSON encoding error %v", err))
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -115,58 +138,40 @@ func responseHandler(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func serveHttp(ctx context.Context) (err error) {
+func StartHttpServer(root context.Context, portNumber int, doneChannel chan<- bool) {
+	kvsLogger.Log("HTTP Method!")
+
 	mux := http.NewServeMux()
 	mux.Handle("/kvs", http.HandlerFunc(responseHandler))
 	mux.Handle("/kvs/", http.HandlerFunc(idResponseHandler))
 
 	srv := &http.Server{
-		Addr:    ":" + fmt.Sprintf("%d", PortNumber),
+		Addr:    ":" + fmt.Sprintf("%d", portNumber),
 		Handler: mux,
 	}
 
 	go func() {
-		if err = srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen:%+s\n", err)
 		}
 	}()
 
-	log.Printf("Server started on port %d", PortNumber)
+	kvsLogger.Log(fmt.Sprintf("HTTP Server started on port %d", portNumber))
 
-	<-ctx.Done()
+	select {
+	case <-root.Done():
+		kvsLogger.Log(fmt.Sprintf("HTTP Server stopping..."))
+		ctxShutDown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer func() {
+			cancel()
+		}()
 
-	log.Printf("Server stopping...")
+		if err := srv.Shutdown(ctxShutDown); err != nil {
+			log.Fatalf("HTTP Server Shutdown failed: %+s", err)
+		}
 
-	ctxShutDown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer func() {
-		cancel()
-	}()
-
-	if err = srv.Shutdown(ctxShutDown); err != nil {
-		log.Fatalf("Server Shutdown failed: %+s", err)
+		kvsLogger.Log(fmt.Sprintf("HTTP Server exited properly"))
 	}
 
-	log.Printf("Server exited properly")
-
-	if err == http.ErrServerClosed {
-		err = nil
-	}
-	return
-}
-
-func StartHttpServer() {
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	go func() {
-		oscall := <-c
-		log.Printf("System call:%+v", oscall)
-		cancel()
-	}()
-
-	if err := serveHttp(ctx); err != nil {
-		log.Printf("Failed to serve:%+v\n", err)
-	}
+	doneChannel <- true
 }
