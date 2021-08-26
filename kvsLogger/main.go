@@ -1,6 +1,7 @@
 package kvsLogger
 
 import (
+	"fmt"
 	"log"
 	"os"
 )
@@ -18,28 +19,23 @@ func StartLogger() chan string {
 }
 
 func processLogChannelEntries() {
-	select {
-	case msg := <-LogChannel:
-		customLog.Println(msg)
+	for msg := range LogChannel {
+		log.Println(msg)
 	}
 }
 
 func Log(msg string) {
-	log.Printf("Log : %v\n", msg)
-	//LogChannel <- msg
+	LogChannel <- fmt.Sprintf("Log : %v", msg)
 }
 
 func Error(msg string) {
-	log.Printf("Error : %v\n", msg)
-	//LogChannel <- msg
+	LogChannel <- fmt.Sprintf("Error : %v", msg)
 }
 
 func Panic(msg string) {
-	log.Printf("Panic : %v\n", msg)
-	//LogChannel <- msg
+	LogChannel <- fmt.Sprintf("Panic : %v", msg)
 }
 
 func Fatal(msg string) {
-	log.Printf("Fatal : %v\n", msg)
-	//LogChannel <- msg
+	LogChannel <- fmt.Sprintf("Fatal : %v", msg)
 }

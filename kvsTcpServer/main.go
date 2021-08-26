@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 )
 
 type Operation struct {
@@ -24,6 +25,8 @@ type Response struct {
 	Response  interface{} `json:"res"`
 	Success   bool        `json:"success"`
 }
+
+var shuttingDown bool
 
 func processOperation(op Operation) (interface{}, error) {
 	switch op.Operation {
@@ -56,8 +59,6 @@ func separateOperations(buf []byte) []Operation {
 	opStrings := strings.Split(string(buf), "\n")
 	opStrings = filterEmptyStrings(opStrings)
 
-	fmt.Println(opStrings, len(opStrings))
-
 	opSlice := []Operation{}
 	for _, opString := range opStrings {
 		var operation Operation
@@ -80,12 +81,11 @@ func separateOperations(buf []byte) []Operation {
  *	Input must be delimited by a newline char ('\n')
  *	Responses will be delimieted by newline char ('\n)
  */
-func handleConnection(conn net.Conn) {
+func handleConnection(wg *sync.WaitGroup, conn net.Conn) {
 	defer conn.Close()
-	//var buffer []byte
 	buffer := make([]byte, 1024)
-	//
-
+	fmt.Println("New connection from : ", conn.LocalAddr())
+	wg.Add(1)
 	for {
 		n, err := conn.Read(buffer)
 		if err != nil && err != io.EOF {
@@ -95,11 +95,7 @@ func handleConnection(conn net.Conn) {
 			return
 		}
 
-		log.Printf("received from %v: %v\n", conn.RemoteAddr(), string(buffer[:n]))
-		log.Println("EOP")
-
 		receivedOperations := separateOperations(buffer[:n])
-		log.Println(receivedOperations)
 		for _, operation := range receivedOperations {
 
 			if operation.Operation == "STOP" {
@@ -123,29 +119,35 @@ func handleConnection(conn net.Conn) {
 				kvsLogger.Error(fmt.Sprintf("TCP encoding error %v", err.Error()))
 				_, writeError := conn.Write([]byte("Error encoding response.\n"))
 				if writeError != nil {
-					kvsLogger.Error(writeError.Error())
+					kvsLogger.Error(fmt.Sprintf("Write error %v", err.Error()))
 				}
 			} else {
 				response := append(jsonResponse, []byte("\n")...)
 				_, writeError := conn.Write(response)
 				if writeError != nil {
-					kvsLogger.Error(writeError.Error())
+					kvsLogger.Error(fmt.Sprintf("Write error %v", err.Error()))
 				}
 			}
+		}
+
+		if shuttingDown {
+			wg.Done()
+			return
 		}
 	}
 }
 
 func StartTcpServer(root context.Context, portNumber int, doneChannel chan<- bool) {
+	var wg sync.WaitGroup
 	PORT := fmt.Sprintf(":%d", portNumber)
 	listener, err := net.Listen("tcp4", PORT)
 	if err != nil {
 		log.Panic(err)
 		return
 	}
-	defer listener.Close()
+	shuttingDown = false
 
-	log.Printf("TCP listening on port %s\n", PORT)
+	kvsLogger.Log(fmt.Sprintf("TCP listening on port %s", PORT))
 	go func() {
 		for {
 			connection, err := listener.Accept()
@@ -153,14 +155,15 @@ func StartTcpServer(root context.Context, portNumber int, doneChannel chan<- boo
 				log.Panic(err)
 				return
 			}
-			go handleConnection(connection)
+			go handleConnection(&wg, connection)
 		}
 	}()
 
-	select {
-	case <-root.Done():
-		log.Print("Closing TCP connection")
-	}
+	<-root.Done()
+	kvsLogger.Log("Closing TCP connection")
+	shuttingDown = true
+
+	wg.Wait()
 
 	doneChannel <- true
 }

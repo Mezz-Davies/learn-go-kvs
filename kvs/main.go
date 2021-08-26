@@ -3,7 +3,6 @@ package kvs
 import (
 	"errors"
 	"expvar"
-	"fmt"
 	"log"
 
 	uuid "github.com/google/uuid"
@@ -211,7 +210,6 @@ func Set(value interface{}) (string, error) {
 }
 
 func Update(id string, value interface{}) error {
-	fmt.Println(value)
 	if id == "" {
 		registerResult(updateActionType, false)
 		return errors.New("No id provided.")
