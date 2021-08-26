@@ -9,21 +9,22 @@ import (
 	"gokvs/kvsTcpServer"
 	"os"
 	"os/signal"
+	"sync"
 )
 
 func main() {
+	var rootWg sync.WaitGroup
+
 	kvs.Start()
 	defer kvs.Stop()
-
-	kvsLogger.StartLogger()
+	kvsLogger.StartLogger(&rootWg)
+	defer kvsLogger.WaitForLoggerToComplete()
 
 	rootContext, cancel := context.WithCancel(context.Background())
 
-	doneChannel := make(chan bool)
+	go kvsHttpServer.StartHttpServer(rootContext, &rootWg, 8080)
 
-	go kvsHttpServer.StartHttpServer(rootContext, 8080, doneChannel)
-
-	go kvsTcpServer.StartTcpServer(rootContext, 8081, doneChannel)
+	go kvsTcpServer.StartTcpServer(rootContext, &rootWg, 8081)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
@@ -33,8 +34,7 @@ func main() {
 	kvsLogger.Log(fmt.Sprintf("Signal '%v' received. Stopping child processes", interrupt))
 	cancel()
 
-	for i := 0; i < 2; i++ {
-		<-doneChannel
-	}
+	rootWg.Wait()
+
 	kvsLogger.Log("Main: Exited")
 }

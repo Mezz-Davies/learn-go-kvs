@@ -8,8 +8,6 @@ import (
 	uuid "github.com/google/uuid"
 )
 
-type actionType int
-
 const (
 	getActionType = iota
 	setActionType
@@ -17,18 +15,21 @@ const (
 	deleteActionType
 )
 
+type KvsStoreType map[uuid.UUID]interface{}
+
+var kvs KvsStoreType
+
+type actionType int
+
 type Action struct {
 	actionType actionType
 	id         string
 	val        interface{}
 }
 
-type Server struct {
-	actionChannel chan Action
-}
-
 var actionChannel chan Action
 var replyChannel chan interface{}
+var resultsChannel chan kvsResult
 
 type KvsMetricsStruct struct {
 	Size                 int
@@ -45,12 +46,9 @@ type kvsResult struct {
 	success    bool
 }
 
-var resultsChannel chan kvsResult
-
-type KvsStoreType map[uuid.UUID]interface{}
-
-var kvs KvsStoreType
-
+/*
+ * Synchronous KVS Access methods
+ */
 func getFromKvs(ketToFetch string) (interface{}, error) {
 	uuidToFetch, parseError := uuid.Parse(ketToFetch)
 	if parseError != nil {
@@ -89,38 +87,9 @@ func deleteFromKvs(keyToDelete string) error {
 	return nil
 }
 
-func KvsMetrics() interface{} {
-	return KvsMetricsStruct{
-		Size:                 kvsSize,
-		Operations:           kvsOps,
-		SuccessfulOperations: kvsSuccessfulOps,
-	}
-}
-
-func Start(initState ...KvsStoreType) {
-	kvs = make(KvsStoreType)
-	for _, state := range initState {
-		for k, v := range state {
-			kvs[k] = v
-		}
-	}
-	actionChannel = make(chan Action)
-	replyChannel = make(chan interface{})
-	resultsChannel = make(chan kvsResult)
-
-	// ExpVars
-	expvar.Publish("Kvs Metrics", expvar.Func(KvsMetrics))
-
-	// init channel monitoring
-	go monitorStoreOperations(actionChannel)
-	go monitorResultsChannel(resultsChannel)
-}
-
-func Stop() {
-	close(actionChannel)
-	close(replyChannel)
-}
-
+/*
+ *	Channel monitor functions, to be run in own GoRoutines
+ */
 func monitorStoreOperations(storeActionChannel <-chan Action) {
 	for action := range storeActionChannel {
 		switch action.actionType {
@@ -167,6 +136,47 @@ func registerResult(actionType actionType, success bool) {
 		success:    success,
 	}
 	resultsChannel <- resultToRegister
+}
+
+// Function to describe exported metrics.
+func KvsMetrics() interface{} {
+	return KvsMetricsStruct{
+		Size:                 kvsSize,
+		Operations:           kvsOps,
+		SuccessfulOperations: kvsSuccessfulOps,
+	}
+}
+
+/*
+ *	Initialises kvs. Should only be called during main thread startup.
+ *	Kvs is then ready to be used concurrently by calling Accessor methods below.
+ */
+func Start(initState ...KvsStoreType) {
+	kvs = make(KvsStoreType)
+	actionChannel = make(chan Action)
+	replyChannel = make(chan interface{})
+	resultsChannel = make(chan kvsResult)
+
+	// Set initial state of store
+	for _, state := range initState {
+		for k, v := range state {
+			kvs[k] = v
+			kvsSize++
+		}
+	}
+
+	// ExpVars
+	expvar.Publish("Kvs Metrics", expvar.Func(KvsMetrics))
+
+	// init channel monitoring
+	go monitorStoreOperations(actionChannel)
+	go monitorResultsChannel(resultsChannel)
+}
+
+func Stop() {
+	close(actionChannel)
+	close(replyChannel)
+	close(resultsChannel)
 }
 
 func IdIsValid(id string) (bool, error) {
@@ -249,6 +259,9 @@ func Delete(id string) error {
 	return nil
 }
 
+/*
+ *	Exports a copy of the current KVS. This is used for testing
+ */
 func GetStoreCopy() KvsStoreType {
 	return kvs
 }

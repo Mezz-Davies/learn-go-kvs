@@ -86,6 +86,7 @@ func handleConnection(wg *sync.WaitGroup, conn net.Conn) {
 	buffer := make([]byte, 1024)
 	fmt.Println("New connection from : ", conn.LocalAddr())
 	wg.Add(1)
+	defer wg.Done()
 	for {
 		n, err := conn.Read(buffer)
 		if err != nil && err != io.EOF {
@@ -131,13 +132,13 @@ func handleConnection(wg *sync.WaitGroup, conn net.Conn) {
 		}
 
 		if shuttingDown {
-			wg.Done()
 			return
 		}
 	}
 }
 
-func StartTcpServer(root context.Context, portNumber int, doneChannel chan<- bool) {
+func StartTcpServer(rootCtx context.Context, rootWg *sync.WaitGroup, portNumber int) {
+	rootWg.Add(1)
 	var wg sync.WaitGroup
 	PORT := fmt.Sprintf(":%d", portNumber)
 	listener, err := net.Listen("tcp4", PORT)
@@ -159,11 +160,10 @@ func StartTcpServer(root context.Context, portNumber int, doneChannel chan<- boo
 		}
 	}()
 
-	<-root.Done()
+	<-rootCtx.Done()
 	kvsLogger.Log("Closing TCP connection")
 	shuttingDown = true
 
 	wg.Wait()
-
-	doneChannel <- true
+	rootWg.Done()
 }

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -122,7 +123,8 @@ func responseHandler(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func StartHttpServer(root context.Context, portNumber int, doneChannel chan<- bool) {
+func StartHttpServer(rootCtx context.Context, rootWg *sync.WaitGroup, portNumber int) {
+	rootWg.Add(1)
 	mux := http.NewServeMux()
 	mux.Handle("/kvs", http.HandlerFunc(responseHandler))
 	mux.Handle("/kvs/", http.HandlerFunc(idResponseHandler))
@@ -140,7 +142,7 @@ func StartHttpServer(root context.Context, portNumber int, doneChannel chan<- bo
 
 	kvsLogger.Log(fmt.Sprintf("HTTP Server started on port %d", portNumber))
 
-	<-root.Done()
+	<-rootCtx.Done()
 
 	kvsLogger.Log(fmt.Sprintf("HTTP Server stopping..."))
 	ctxShutDown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -154,5 +156,5 @@ func StartHttpServer(root context.Context, portNumber int, doneChannel chan<- bo
 
 	kvsLogger.Log(fmt.Sprintf("HTTP Server exited properly"))
 
-	doneChannel <- true
+	rootWg.Done()
 }
